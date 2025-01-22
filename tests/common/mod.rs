@@ -1,12 +1,24 @@
-use std::{
-    io::{BufRead, BufReader, Write},
-    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    path::PathBuf,
-    sync::mpsc::{channel, Sender},
-    thread,
-};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::task;
+use tokio::{io::AsyncWriteExt, net::ToSocketAddrs};
+use tokio::{net::TcpListener, net::TcpStream};
 
 use loafer::{FileDirFetcher, GopherServer};
+use tokio_util::sync::CancellationToken;
+
+pub fn read_file_wo_lastline<P>(path: P) -> String
+where
+    P: AsRef<Path>,
+{
+    let mut contents = std::fs::read_to_string(path).unwrap();
+
+    if &contents[contents.len() - 5..] == "\r\n.\r\n" {
+        contents.truncate(contents.len() - 5);
+    }
+    contents
+}
 
 pub struct TestClient<T: ToSocketAddrs> {
     addr: T,
@@ -17,58 +29,70 @@ impl<T: ToSocketAddrs> TestClient<T> {
         TestClient { addr }
     }
 
-    pub fn send_request(&self, selector: &str) -> String {
-        let mut stream = TcpStream::connect(&self.addr).unwrap();
+    pub async fn send_request(&self, selector: &str) -> String {
+        let mut stream = TcpStream::connect(&self.addr).await.unwrap();
 
         let mut selector = selector.to_string();
         selector.push_str("\r\n");
 
-        stream.write_all(selector.as_bytes()).unwrap();
+        stream.write_all(selector.as_bytes()).await.unwrap();
 
-        let buf_reader = BufReader::new(stream);
+        let mut buf_reader = BufReader::new(stream);
 
-        let lines: Vec<_> = buf_reader
-            .lines()
-            .map(|result| result.unwrap())
-            .take_while(|line| line != ".")
-            .collect();
+        let mut buffer = String::new();
 
-        lines.join("\n")
+        let mut has_lastline = false;
+        while let Ok(amt) = buf_reader.read_line(&mut buffer).await {
+            if amt == 0 {
+                break;
+            }
+            if &buffer[buffer.len() - 5..] == "\r\n.\r\n" {
+                has_lastline = true;
+                break;
+            }
+        }
+
+        if has_lastline {
+            buffer.truncate(buffer.len() - 5);
+        }
+
+        buffer
     }
 }
 
 pub struct TestServer {
-    signal_send: Sender<()>,
-    server_handle: thread::JoinHandle<()>,
     addr: SocketAddr,
+    shutdown_token: CancellationToken,
 }
 
 impl TestServer {
-    pub fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    pub async fn spawn() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         let addr = listener.local_addr().unwrap();
 
-        let server = GopherServer::new(
-            listener,
-            FileDirFetcher::new(PathBuf::from("tests/gopherhole/")),
-        );
+        let token = CancellationToken::new();
 
-        let (sender, receiver) = channel();
+        let cloned_token = token.clone();
 
-        let server_handle = thread::spawn(|| server.run_with_graceful_shutdown(receiver));
+        task::spawn(async move {
+            GopherServer::new(
+                listener,
+                FileDirFetcher::new(PathBuf::from("tests/gopherhole/")),
+                cloned_token,
+            )
+            .run()
+            .await;
+        });
 
         return TestServer {
             addr,
-            server_handle,
-            signal_send: sender,
+            shutdown_token: token,
         };
     }
 
     pub fn shutdown(self) {
-        self.signal_send.send(()).unwrap();
-        self.server_handle.join().unwrap();
-        println!("Server shut down!")
+        self.shutdown_token.cancel();
     }
 
     pub fn get_addr(&self) -> SocketAddr {
