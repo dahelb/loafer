@@ -1,4 +1,5 @@
 use core::str;
+use std::fmt::Debug;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,15 +8,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::task_tracker::TaskTracker;
-use tracing::info;
+use tracing::{info, instrument};
 
-pub struct GopherServer<R: ResourceFetcher> {
+#[derive(Debug)]
+pub struct GopherServer<R: ResourceFetcher + std::fmt::Debug> {
     listener: TcpListener,
     fetcher: R,
     token: CancellationToken,
 }
 
-impl<R: ResourceFetcher> GopherServer<R> {
+impl<R: ResourceFetcher + std::fmt::Debug> GopherServer<R> {
     pub fn new(listener: TcpListener, fetcher: R, token: CancellationToken) -> Self {
         GopherServer {
             listener,
@@ -24,6 +26,7 @@ impl<R: ResourceFetcher> GopherServer<R> {
         }
     }
 
+    #[instrument]
     pub async fn run(self) {
         let tracker = TaskTracker::new();
 
@@ -88,12 +91,12 @@ impl<R: ResourceFetcher> Handler<R> {
     }
 }
 
-pub trait ResourceFetcher: Clone + Send + Sync + 'static {
+pub trait ResourceFetcher: Clone + Debug + Send + Sync + 'static {
     fn fetch_resource(&self, selector: &str) -> impl Future<Output = io::Result<Vec<u8>>> + Send;
     fn fetch_home(&self) -> impl Future<Output = io::Result<Vec<u8>>> + Send;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FileDirFetcher {
     dir: PathBuf,
 }
@@ -109,8 +112,6 @@ impl FileDirFetcher {
 fn resolve_path<P: AsRef<Path>>(root: &Path, component: P) -> io::Result<PathBuf> {
     let canon = root.join(component).canonicalize().unwrap();
 
-    info!(?canon);
-
     if !canon.starts_with(root) {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -122,6 +123,7 @@ fn resolve_path<P: AsRef<Path>>(root: &Path, component: P) -> io::Result<PathBuf
 }
 
 impl ResourceFetcher for FileDirFetcher {
+    #[instrument]
     async fn fetch_resource(&self, selector: &str) -> io::Result<Vec<u8>> {
         let path = resolve_path(&self.dir, selector)?;
 

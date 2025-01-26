@@ -78,7 +78,7 @@ impl TestServer {
         task::spawn(async move {
             GopherServer::new(
                 listener,
-                FileDirFetcher::new(PathBuf::from("tests/gopherhole/")),
+                FileDirFetcher::new(&PathBuf::from("tests/gopherhole/")),
                 cloned_token,
             )
             .run()
