@@ -1,8 +1,8 @@
 iWelcome to this Gopherhole!
 iHere are some things to discover for you:
 
-0About me	about_me.txt	127.0.0.1	7000
+0About me	about_me	127.0.0.1	7000
 iHere you can find some information about me.
 
-1This is a sudbir	subdir/index	127.0.0.1	7000
+1This is a sudbir	/subdir/index	127.0.0.1	7000
 .

@@ -83,7 +83,9 @@ async fn decode(stream: &mut TcpStream) -> String {
         }
     }
 
-    buffer.truncate(buffer.len() - 2);
+    if buffer.len() >= 2 {
+        buffer.truncate(buffer.len() - 2);
+    }
 
     buffer
 }
@@ -94,6 +96,8 @@ impl<R: ResourceFetcher> Handler<R> {
             s = decode(&mut stream) => s,
             _ = self.token.cancelled() => { return }
         };
+
+        info!(selector, "Handling selector");
 
         let response = match selector.as_str() {
             "" => self.fetcher.fetch_home().await,
@@ -126,8 +130,19 @@ impl FileDirFetcher {
     }
 }
 
-fn resolve_path<P: AsRef<Path>>(root: &Path, component: P) -> io::Result<PathBuf> {
-    let canon = root.join(component).canonicalize().unwrap();
+fn resolve_path<P: AsRef<Path> + Debug>(root: &Path, component: P) -> io::Result<PathBuf> {
+    debug!(?root, ?component, "Canoncializing");
+
+    let canon = if component.as_ref().has_root() {
+        root.join(".")
+            .join(component.as_ref().strip_prefix("/").unwrap())
+            .canonicalize()
+            .unwrap()
+    } else {
+        root.join(component.as_ref()).canonicalize().unwrap()
+    };
+
+    debug!(?canon, "Canonical path built");
 
     if !canon.starts_with(root) {
         Err(io::Error::new(
