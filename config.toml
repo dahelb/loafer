@@ -1,0 +1,3 @@
+base_dir = "tests/gopherhole"
+index_file = "tests/gopherhole/index"
+max_connections = 10

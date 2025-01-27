@@ -80,6 +80,7 @@ impl TestServer {
                 listener,
                 FileDirFetcher::new(&PathBuf::from("tests/gopherhole/")),
                 cloned_token,
+                5,
             )
             .run()
             .await;

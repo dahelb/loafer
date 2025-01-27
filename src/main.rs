@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use loafer::config::{get_config, LoaferConfig};
 use loafer::FileDirFetcher;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -8,9 +9,11 @@ use tracing_subscriber::{self, fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() {
+    let config = get_config();
+
     let listener = TcpListener::bind("127.0.0.1:7000").await.unwrap();
 
-    let fetcher = FileDirFetcher::new(&PathBuf::from("tests/gopherhole"));
+    let fetcher = FileDirFetcher::new(&config.base_dir, &config.index_file);
 
     let signal = tokio::signal::ctrl_c();
 
@@ -25,5 +28,5 @@ async fn main() {
         .init();
 
     info!("Starting gopher server");
-    loafer::run(listener, fetcher, signal).await;
+    loafer::run(listener, fetcher, signal, config.max_connections).await;
 }

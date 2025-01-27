@@ -3,34 +3,47 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::task_tracker::TaskTracker;
-use tracing::{info, instrument};
+use tracing::{debug, info};
+
+pub mod config;
 
 #[derive(Debug)]
 pub struct GopherServer<R: ResourceFetcher + std::fmt::Debug> {
     listener: TcpListener,
     fetcher: R,
     token: CancellationToken,
+    semaphore: Arc<Semaphore>,
 }
 
 impl<R: ResourceFetcher + std::fmt::Debug> GopherServer<R> {
-    pub fn new(listener: TcpListener, fetcher: R, token: CancellationToken) -> Self {
+    pub fn new(
+        listener: TcpListener,
+        fetcher: R,
+        token: CancellationToken,
+        max_connections: usize,
+    ) -> Self {
         GopherServer {
             listener,
             fetcher,
             token,
+            semaphore: Arc::new(Semaphore::new(max_connections)),
         }
     }
 
-    #[instrument]
     pub async fn run(self) {
         let tracker = TaskTracker::new();
 
         loop {
+            let permit = self.semaphore.clone().acquire_owned().await.unwrap();
+            debug!("Permit acquired, processing connection");
+
             let s = tokio::select! {
                 Ok((s, _socket)) = self.listener.accept() => s,
                 _ = self.token.cancelled() => {
@@ -46,6 +59,8 @@ impl<R: ResourceFetcher + std::fmt::Debug> GopherServer<R> {
 
             tracker.spawn(async move {
                 handler.handle_connection(s).await;
+                drop(permit);
+                debug!("Finished handling task");
             });
         }
         info!("Waiting for tasks to finish ...");
@@ -99,12 +114,14 @@ pub trait ResourceFetcher: Clone + Debug + Send + Sync + 'static {
 #[derive(Clone, Debug)]
 pub struct FileDirFetcher {
     dir: PathBuf,
+    index_file: PathBuf,
 }
 
 impl FileDirFetcher {
-    pub fn new(dir: &Path) -> Self {
+    pub fn new(dir: &Path, index_file: &Path) -> Self {
         FileDirFetcher {
             dir: dir.canonicalize().unwrap(),
+            index_file: index_file.canonicalize().unwrap(),
         }
     }
 }
@@ -123,22 +140,25 @@ fn resolve_path<P: AsRef<Path>>(root: &Path, component: P) -> io::Result<PathBuf
 }
 
 impl ResourceFetcher for FileDirFetcher {
-    #[instrument]
     async fn fetch_resource(&self, selector: &str) -> io::Result<Vec<u8>> {
         let path = resolve_path(&self.dir, selector)?;
 
         info!("Serving file {path:?}");
 
-        Ok(fs::read(path).await?)
+        fs::read(path).await
     }
 
     async fn fetch_home(&self) -> io::Result<Vec<u8>> {
-        self.fetch_resource("index").await
+        fs::read(self.index_file.clone()).await
     }
 }
 
-pub async fn run<R>(listener: TcpListener, fetcher: R, signal: impl Future + Send + 'static)
-where
+pub async fn run<R>(
+    listener: TcpListener,
+    fetcher: R,
+    signal: impl Future + Send + 'static,
+    max_connections: usize,
+) where
     R: ResourceFetcher,
 {
     let token = CancellationToken::new();
@@ -151,5 +171,7 @@ where
         cloned_token.cancel();
     });
 
-    GopherServer::new(listener, fetcher, token).run().await;
+    GopherServer::new(listener, fetcher, token, max_connections)
+        .run()
+        .await;
 }
